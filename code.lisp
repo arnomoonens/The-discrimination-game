@@ -98,14 +98,6 @@
 
 (defparameter *agent* (make-agent :objects *objects* :trees *trees*))
 
-;geeft die met meeste saliency terug
-; (defun most-salient (topic objects)
-;   (loop for channel in *sensory-channels*
-;         collect (loop for obj in objects
-;                       collect (abs (- (slot-value topic channel) (slot-value obj channel))) into diffs
-;                       finally (return (apply #'min diffs))) into channel-diffs
-;         finally (return (nth (position (apply #'max channel-diffs) channel-diffs) *sensory-channels*))))
-
 (defun saliency-filter (topic objects trees treshold)
   (loop for channel in *sensory-channels*
         summing 1 into ctr
