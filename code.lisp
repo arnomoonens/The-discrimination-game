@@ -1,8 +1,22 @@
 (defparameter *nr-of-objects* 6)
 
+;-----HELP FUNCTIONS-----
 (defun parse-number (str)
   (with-input-from-string (in str)
                           (read in)))
+
+(defun same-elements (first second)
+  (and (= (length first) (length second)) (loop for el in first do
+                                                (when (not (member el second)) (return nil))
+                                                finally (return t))))
+
+;Source: my solutions of the Lisp exercises
+(defun tree-combinations (trees)
+  (labels ((iter (result current)
+    (if (null current)
+        (cdr (sort result #'< :key #'length)) ;sort by length: try combinations with least number of trees first
+        (iter (append (mapcar (lambda (i) (cons (car current) i)) result) result) (cdr current)))))
+  (iter '(nil) trees)))
 
 (defparameter *sensory-channels* '(X Y WIDTH HEIGHT GRAYSCALE))
 
@@ -102,7 +116,7 @@
         	collect  (nth (- ctr 1) trees)))
 
 (defun context-scaling (objects)
-  (loop for channel in *sensory-channels* do
+  (loop for channel in (butlast *sensory-channels*) do ;Butlast: don't apply context-scaling to grayscale, values are important
         (let* ((values (loop for obj in objects collect (slot-value obj channel)))
                (min (apply #'min values))
                (max (apply #'max values))
@@ -130,23 +144,15 @@
             (new-path (cons node path)))
         ;(format t "New path: ~a, filtered-objects: ~d~%" new-path (length filtered-objects))
         (setf (node-used node) (+ 1 (node-used node)))
-        (cond ((null filtered-objects) nil)
-              ((and (= (length filtered-objects) 1) (eq (car filtered-objects) topic)) new-path)
-              ((same-values filtered-objects (node-schannel node)) nil)
-              ((or (null (node-left node)) (null (node-right node))) nil)
+        (cond
+              ((or (null (node-left node)) (null (node-right node))) new-path)
               ((< (slot-value topic (node-schannel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node (node-left node) filtered-objects new-path))
               (t (try-node (node-right node) filtered-objects new-path)))))
         (loop for tree in (agent-trees agent)
-              for result = (try-node tree (agent-objects agent) '())
-              if result
-              	collect (progn (loop for node in result do (setf (node-success node) (+ 1 (node-success node)))) t) into results
-               else
-               	collect nil into results
-               finally (let ((got-success (reduce (lambda (x y) (or x y)) results)))
-                         (if got-success
-                             (format t "Got success! List: ~a~%" results)
-                             (progn (format t "No successes, expanding randomly~%") (random-expand (random-element (agent-trees agent)))))))))
+              collect (try-node tree (agent-objects agent) '())
+              finally (let ((tried-combinations '()))))))
 
+;collect (progn (loop for node in result do (setf (node-success node) (+ 1 (node-success node)))) t) into results
 
 ;Todo: apply context-scaling: first copy objects
 ; combine multiple trees (not just leafs)
