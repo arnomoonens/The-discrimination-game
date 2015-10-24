@@ -60,13 +60,16 @@
 (defparameter *trees* (loop for schannel in *sensory-channels*
                             collect (make-node :schannel schannel)))
 
-(defun filter-objects (filter-node objects)
-  (let ((start (node-regionstart filter-node))
-        (end (node-regionend filter-node))
-        (schannel (node-schannel filter-node)))
-    (loop for obj in objects
-          when (and (>= (slot-value obj schannel) start) (< (slot-value obj schannel) end))
-          collect obj)))
+(defun filter-objects (filter-nodes objects)
+  (loop for node in filter-nodes
+        for start = (node-regionstart node)
+        for end = (node-regionend node)
+        for channel = (node-schannel node)
+        do (setf objects (loop for obj in objects
+                                        when (and (>= (slot-value obj channel) start) (< (slot-value obj channel) end))
+                                          collect obj))
+        finally (return objects)
+        ))
 
 (defun random-expand (tree)
   (if (and (not (null (node-left tree))) (not (null (node-right tree)))) ;we are not at a leaf yet
