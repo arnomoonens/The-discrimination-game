@@ -1,13 +1,17 @@
 ;------CONFIG------
-(defparameter *nr-of-objects* 6)
+(defparameter *nr-of-objects* 20)
 (defparameter *pruning-frequency* 20)
 (defparameter *pruning-used-treshold* 10)
 (defparameter *pruning-success-treshold* 0.2)
+(defparameter *saliency-treshold* 0)
 
 
 (defun parse-number (str)
   (with-input-from-string (in str)
                           (read in)))
+
+(defun random-element (l)
+  (nth (random (length l)) l))
 
 (defun same-elements (first second)
   (and (= (length first) (length second)) (loop for el in first do
@@ -49,9 +53,12 @@
 (let ((in (open "~/MA1-AI/Artificial Intelligence Programming Paradigms/Assignment1/object-features.txt" :if-does-not-exist nil)))
   (when in
     (read-line in nil)
-    (defparameter *objects* (loop repeat *nr-of-objects*
-                                  collect (process-object-string (read-line in nil)))
-      (close in))))
+    (defparameter *objects* (loop for line = (read-line in nil)
+                                                  until (eq line nil)
+                                                   collect (process-object-string line)))
+      (close in)))
+(setf *objects* (loop repeat *nr-of-objects* collect (random-element *objects*)))
+
 
 (defstruct node
   (schannel nil :type symbol)
@@ -100,9 +107,6 @@
             (return nil))
           finally (return t))))
 
-(defun random-element (l)
-  (nth (random (length l)) l))
-
 (defmethod print-object ((object node) stream)
   (print-unreadable-object (object stream :type t)
                            (with-slots (schannel regionstart regionend left right) object
@@ -132,7 +136,7 @@
                (max (apply #'max values))
                (diff (- max min)))
           (loop for obj in objects do
-                (setf (slot-value obj channel) (/ (- (slot-value obj channel) min) diff))))
+                (setf (slot-value obj channel) (/ (- (slot-value obj channel) min) diff)))); (X - MIN) / (MAX - MIN)
         finally (return objects)))
 
 (defun increment-age (trees)
@@ -145,14 +149,14 @@
 
 (defun trees-pruning (trees)
   (defun walk-tree (tree)
-    (if (or (null (node-left tree)) (null (node-right tree)))
-        (and (> (node-used tree) *pruning-used-treshold*) (< (/ (node-success tree) (node-used tree)) *pruning-success-treshold*))
+    (if (or (null (node-left tree)) (null (node-right tree)));Check if node may be removed only if it is a leaf node (i.e. has no children)
+        (and (> (node-used tree) *pruning-used-treshold*) (< (/ (node-success tree) (node-used tree)) *pruning-success-treshold*)) ;Node may be removed if it is already used for a few times but hasn't been very successful
         (let ((left (walk-tree (node-left tree)))
               (right (walk-tree (node-right tree))))
-          (if (and left right)
-              (progn (format t "Removing children of ~a" tree) (setf (node-left tree) nil) (setf (node-right tree) nil) (and (> (node-used tree) 5) (< (/ (node-success tree) (node-used tree)) 0.2)))
+          (if (and left right) ;If the left and right child may be removed: remove them execute walk-tree function on same node (which will go to the 'then' branch of the first 'if')
+              (progn (format t "Removing children of ~a" tree) (setf (node-left tree) nil) (setf (node-right tree) nil) (walk-tree tree))
               nil))))
-  (loop for tree in trees do
+  (loop for tree in trees do ;Check the tree of every sensory channel
         (walk-tree tree)))
 
 (defun play-game (agent)
@@ -164,31 +168,31 @@
          (objects-scaled (context-scaling objects-copy))
          (topic (random-element (agent-objects agent)))
          (topic-scaled (nth (position topic (agent-objects agent)) objects-scaled))
-         (trees (saliency-filter topic (remove topic (agent-objects agent)) (agent-trees agent) 0)))
+         (trees (saliency-filter topic (remove topic (agent-objects agent)) (agent-trees agent) *saliency-treshold*)))
     ; (format t "Value for ~s channel of topic: ~d~%" (node-schannel tree) (slot-value topic (node-schannel tree)))
     (defun try-node (node objects path)
       (let* ((filtered-objects (filter-objects (list node) objects))
-             (new-path (cons (cons node filtered-objects) path)))
+             (new-path (cons (cons node filtered-objects) path))); Each element of a path is a cons of the visited node and the objects left after filtering using that node
         (setf (node-used node) (+ 1 (node-used node)))
         (cond
           ((or (null (node-left node)) (null (node-right node))) (reverse new-path))
           ((< (slot-value topic-scaled (node-schannel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node (node-left node) filtered-objects new-path))
           (t (try-node (node-right node) filtered-objects new-path)))))
     (let* ((tree-paths (loop for tree in trees collect (try-node tree objects-scaled '())))
-           (combinations (tree-combinations tree-paths)))
+           (combinations (tree-combinations tree-paths))) ;Combinations of trees (sensory channels), e.g. X and WIDTH, only GRAYSCALE, all of them together
       (loop for combination in combinations
-            for tree-nodes-lists = (tree-nodes-combinations combination)
+            for tree-nodes-lists = (tree-nodes-combinations combination) ;make combinations of nodes from those trees, e.g.: {[X 0.0-0.5] [Y 0.5-1.0]}
             for result = (loop for nodes-combination in tree-nodes-lists
-                                      for filtered = (reduce #'intersection (mapcar #'cdr nodes-combination))
-                                      when (and (= (length filtered) 1) (eq (car filtered) topic-scaled)) do
+                                      for filtered = (reduce #'intersection (mapcar #'cdr nodes-combination));Filter using combinations of nodes: intersection of objects left after filtering using the nodes
+                                      when (and (= (length filtered) 1) (eq (car filtered) topic-scaled)) do ;Only the topic is left after filtering
                                               (let ((nodes (mapcar #'car nodes-combination)))
-                                                (loop for node in nodes do (setf (node-success node) (+ 1 (node-success node))))
-                                                (return nodes))
-                                      finally (return nil))
+                                                (loop for node in nodes do (setf (node-success node) (+ 1 (node-success node)))) ;Increase success of all nodes used for discrimination
+                                                (return nodes));Discriminative combination found: stop looping
+                                      finally (return nil)) ;No discriminative combination of nodes found
             when result do
               ;(format t "Found it, combination: ~a. Topic was: ~a~%" result topic-scaled)
-              (return result)
-            finally (random-expand (random-element (agent-trees agent)))))))
+              (return result) ;Result from inner-loop: stop outer loop as well
+            finally (random-expand (random-element (agent-trees agent))))))) ;No results from all the inner loops: randomly expand a random tree
 
 ;collect (progn (loop for node in result do (setf (node-success node) (+ 1 (node-success node)))) t) into results
 
