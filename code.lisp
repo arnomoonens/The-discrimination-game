@@ -1,6 +1,10 @@
+;------CONFIG------
 (defparameter *nr-of-objects* 6)
+(defparameter *pruning-frequency* 20)
+(defparameter *pruning-used-treshold* 5)
+(defparameter *pruning-success-treshold* 0.3)
 
-;-----HELP FUNCTIONS-----
+
 (defun parse-number (str)
   (with-input-from-string (in str)
                           (read in)))
@@ -13,15 +17,26 @@
 ;Source: my solutions of the Lisp exercises
 (defun tree-combinations (trees)
   (labels ((iter (result current)
-    (if (null current)
-        (cdr (sort result #'< :key #'length)) ;sort by length: try combinations with least number of trees first
-        (iter (append (mapcar (lambda (i) (cons (car current) i)) result) result) (cdr current)))))
-  (iter '(nil) trees)))
+                 (if (null current)
+                     (cdr (sort (copy-list result) #'< :key #'length)) ;sort by length: try combinations with least number of trees first
+                     (iter (append (mapcar (lambda (i) (cons (car current) i)) result) result) (cdr current)))))
+          (iter '(nil) trees)))
+
+;Todo: write iteratively?
+(defun tree-nodes-combinations (lists)
+  (if (car lists)
+      (mapcan (lambda (inner-val)
+                (mapcar (lambda (outer-val)
+                          (cons outer-val
+                                inner-val))
+                        (car lists)))
+              (tree-nodes-combinations (cdr lists)))
+      (list nil)))
 
 (defparameter *sensory-channels* '(X Y WIDTH HEIGHT GRAYSCALE))
 
 (defstruct (object
-  (:constructor create-object (x y width height grayscale)))
+             (:constructor create-object (x y width height grayscale)))
   x y width height grayscale)
 
 (defun process-object-string (string)
@@ -36,7 +51,7 @@
     (read-line in nil)
     (defparameter *objects* (loop repeat *nr-of-objects*
                                   collect (process-object-string (read-line in nil)))
-    (close in))))
+      (close in))))
 
 (defstruct node
   (schannel nil :type symbol)
@@ -66,8 +81,8 @@
         for end = (node-regionend node)
         for channel = (node-schannel node)
         do (setf objects (loop for obj in objects
-                                        when (and (>= (slot-value obj channel) start) (< (slot-value obj channel) end))
-                                          collect obj))
+                               when (and (>= (slot-value obj channel) start) (< (slot-value obj channel) end))
+                               collect obj))
         finally (return objects)
         ))
 
@@ -90,9 +105,9 @@
 
 (defmethod print-object ((object node) stream)
   (print-unreadable-object (object stream :type t)
-    (with-slots (schannel regionstart regionend left right) object
-      ;(format stream "N[~d, ~d] ~% /  \\ ~% ~a  ~a" regionstart regionend left right))))
-      (format stream "~s[~d, ~d] " schannel regionstart regionend left right))))
+                           (with-slots (schannel regionstart regionend left right) object
+                                       ;(format stream "N[~d, ~d] ~% /  \\ ~% ~a  ~a" regionstart regionend left right))))
+                                       (format stream "~s[~d, ~d] " schannel regionstart regionend left right))))
 
 (defstruct agent
   (games-played 0 :type number)
@@ -105,10 +120,10 @@
   (loop for channel in *sensory-channels*
         summing 1 into ctr
         for saliency = (loop for obj in objects
-                      collect (abs (- (slot-value topic channel) (slot-value obj channel))) into diffs
-                      finally (return (apply #'min diffs)))
+                             collect (abs (- (slot-value topic channel) (slot-value obj channel))) into diffs
+                             finally (return (apply #'min diffs)))
         when (> saliency treshold)
-        	collect  (nth (- ctr 1) trees)))
+        collect  (nth (- ctr 1) trees)))
 
 (defun context-scaling (objects)
   (loop for channel in (butlast *sensory-channels*) do ;Butlast: don't apply context-scaling to grayscale, values are important
@@ -117,35 +132,62 @@
                (max (apply #'max values))
                (diff (- max min)))
           (loop for obj in objects do
-                (setf (slot-value obj channel) (/ (- (slot-value obj channel) min) diff))))))
+                (setf (slot-value obj channel) (/ (- (slot-value obj channel) min) diff))))
+        finally (return objects)))
 
 (defun increment-age (trees)
   (loop while (not (null trees)) do
-         (let ((node (pop trees)))
-           (setf (node-age node) (+ 1 (node-age node)))
-           (when (and (node-left node) (node-right node))
-               (push (node-left node) trees)
-               (push (node-right node) trees)))))
+        (let ((node (pop trees)))
+          (setf (node-age node) (+ 1 (node-age node)))
+          (when (and (node-left node) (node-right node))
+            (push (node-left node) trees)
+            (push (node-right node) trees)))))
+
+(defun trees-pruning (trees)
+  (defun walk-tree (tree)
+    (if (or (null (node-left tree)) (null (node-right tree)))
+        (and (> (node-used tree) *pruning-used-treshold*) (< (/ (node-success tree) (node-used tree)) *pruning-success-treshold*))
+        (let ((left (walk-tree (node-left tree)))
+              (right (walk-tree (node-right tree))))
+          (if (and left right)
+              (progn (format t "Removing children of ~a" tree) (setf (node-left tree) nil) (setf (node-right tree) nil) (and (> (node-used tree) 5) (< (/ (node-success tree) (node-used tree)) 0.2)))
+              nil))))
+  (loop for tree in trees do
+        (walk-tree tree)))
 
 (defun play-game (agent)
+  (setf (agent-games-played agent) (+ 1 (agent-games-played agent)))
+  (when (= (mod (agent-games-played agent) *pruning-frequency*) 0)
+          (trees-pruning (agent-trees agent)))
   (increment-age (copy-list (agent-trees agent)))
   (let* ((objects-copy (loop for obj in (agent-objects agent) collect (copy-object obj)))
+         (objects-scaled (context-scaling objects-copy))
          (topic (random-element (agent-objects agent)))
+         (topic-scaled (nth (position topic (agent-objects agent)) objects-scaled))
          (trees (saliency-filter topic (remove topic (agent-objects agent)) (agent-trees agent) 0)))
-    (context-scaling objects-copy)
     ; (format t "Value for ~s channel of topic: ~d~%" (node-schannel tree) (slot-value topic (node-schannel tree)))
-    (defun try-node (node objects path)
-      (let ((filtered-objects (filter-objects node objects))
-            (new-path (cons node path)))
-        ;(format t "New path: ~a, filtered-objects: ~d~%" new-path (length filtered-objects))
+    (defun try-node (node path)
+      (let ((new-path (cons node path)))
         (setf (node-used node) (+ 1 (node-used node)))
         (cond
-              ((or (null (node-left node)) (null (node-right node))) new-path)
-              ((< (slot-value topic (node-schannel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node (node-left node) filtered-objects new-path))
-              (t (try-node (node-right node) filtered-objects new-path)))))
-        (loop for tree in (agent-trees agent)
-              collect (try-node tree (agent-objects agent) '())
-              finally (let ((tried-combinations '()))))))
+          ((or (null (node-left node)) (null (node-right node))) (reverse new-path))
+          ((< (slot-value topic-scaled (node-schannel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node (node-left node) new-path))
+          (t (try-node (node-right node) new-path)))))
+    (let* ((tree-paths (loop for tree in trees collect (try-node tree '())))
+           (combinations (tree-combinations tree-paths)))
+      (loop for combination in combinations
+            for tree-nodes-lists = (tree-nodes-combinations combination)
+            for result = (loop for nodes-combination in tree-nodes-lists
+                                      for filtered = (filter-objects nodes-combination objects-scaled)
+                                      when (and (= (length filtered) 1) (eq (car filtered) topic-scaled)) do
+                                              (loop for node in nodes-combination do (setf (node-success node) (+ 1 (node-success node))))
+                                              (return nodes-combination)
+                                      finally (return nil))
+            when result do
+              ;(format t "Found it, combination: ~a. Topic was: ~a~%" result (nth (position topic (agent-objects agent)) objects-copy))
+              (return result)
+            finally (random-expand (random-element (agent-trees agent))))))
+        )
 
 ;collect (progn (loop for node in result do (setf (node-success node) (+ 1 (node-success node)))) t) into results
 
