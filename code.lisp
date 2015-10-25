@@ -1,8 +1,8 @@
 ;------CONFIG------
 (defparameter *nr-of-objects* 6)
 (defparameter *pruning-frequency* 20)
-(defparameter *pruning-used-treshold* 5)
-(defparameter *pruning-success-treshold* 0.3)
+(defparameter *pruning-used-treshold* 10)
+(defparameter *pruning-success-treshold* 0.2)
 
 
 (defun parse-number (str)
@@ -166,28 +166,29 @@
          (topic-scaled (nth (position topic (agent-objects agent)) objects-scaled))
          (trees (saliency-filter topic (remove topic (agent-objects agent)) (agent-trees agent) 0)))
     ; (format t "Value for ~s channel of topic: ~d~%" (node-schannel tree) (slot-value topic (node-schannel tree)))
-    (defun try-node (node path)
-      (let ((new-path (cons node path)))
+    (defun try-node (node objects path)
+      (let* ((filtered-objects (filter-objects (list node) objects))
+             (new-path (cons (cons node filtered-objects) path)))
         (setf (node-used node) (+ 1 (node-used node)))
         (cond
           ((or (null (node-left node)) (null (node-right node))) (reverse new-path))
-          ((< (slot-value topic-scaled (node-schannel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node (node-left node) new-path))
-          (t (try-node (node-right node) new-path)))))
-    (let* ((tree-paths (loop for tree in trees collect (try-node tree '())))
+          ((< (slot-value topic-scaled (node-schannel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node (node-left node) filtered-objects new-path))
+          (t (try-node (node-right node) filtered-objects new-path)))))
+    (let* ((tree-paths (loop for tree in trees collect (try-node tree objects-scaled '())))
            (combinations (tree-combinations tree-paths)))
       (loop for combination in combinations
             for tree-nodes-lists = (tree-nodes-combinations combination)
             for result = (loop for nodes-combination in tree-nodes-lists
-                                      for filtered = (filter-objects nodes-combination objects-scaled)
+                                      for filtered = (reduce #'intersection (mapcar #'cdr nodes-combination))
                                       when (and (= (length filtered) 1) (eq (car filtered) topic-scaled)) do
-                                              (loop for node in nodes-combination do (setf (node-success node) (+ 1 (node-success node))))
-                                              (return nodes-combination)
+                                              (let ((nodes (mapcar #'car nodes-combination)))
+                                                (loop for node in nodes do (setf (node-success node) (+ 1 (node-success node))))
+                                                (return nodes))
                                       finally (return nil))
             when result do
-              ;(format t "Found it, combination: ~a. Topic was: ~a~%" result (nth (position topic (agent-objects agent)) objects-copy))
+              ;(format t "Found it, combination: ~a. Topic was: ~a~%" result topic-scaled)
               (return result)
-            finally (random-expand (random-element (agent-trees agent))))))
-        )
+            finally (random-expand (random-element (agent-trees agent)))))))
 
 ;collect (progn (loop for node in result do (setf (node-success node) (+ 1 (node-success node)))) t) into results
 
