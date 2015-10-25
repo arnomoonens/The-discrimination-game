@@ -91,10 +91,9 @@
         for end = (node-regionend node)
         for channel = (node-channel node)
         do (setf objects (loop for obj in objects
-                               when (and (>= (slot-value obj channel) start) (< (slot-value obj channel) end))
+                               when (and (>= (slot-value obj channel) start) (<= (slot-value obj channel) end))
                                collect obj))
-        finally (return objects)
-        ))
+        finally (return objects)))
 
 (defun random-expand (tree)
   (if (and (not (null (node-left tree))) (not (null (node-right tree)))) ;we are not at a leaf yet
@@ -113,8 +112,7 @@
 (defmethod print-object ((object node) stream)
   (print-unreadable-object (object stream :type t)
                            (with-slots (channel regionstart regionend left right) object
-                                       ;(format stream "N[~d, ~d] ~% /  \\ ~% ~a  ~a" regionstart regionend left right))))
-                                       (format stream "~s[~d, ~d] " channel regionstart regionend left right))))
+                                       (format stream "[~s ~d-~d] " channel (float regionstart) (float regionend)))))
 
 (defstruct agent
   (games-played 0 :type number)
@@ -182,7 +180,7 @@
         (setf (node-used node) (+ 1 (node-used node)))
         (cond
           ((or (null (node-left node)) (null (node-right node))) (reverse new-path))
-          ((< (slot-value topic-scaled (node-channel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node (node-left node) filtered-objects new-path))
+          ((<= (slot-value topic-scaled (node-channel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node (node-left node) filtered-objects new-path))
           (t (try-node (node-right node) filtered-objects new-path)))))
     (let* ((tree-paths (loop for tree in trees collect (try-node tree objects-scaled '())))
            (combinations (tree-combinations tree-paths))) ;Combinations of trees (sensory channels), e.g. X and WIDTH, only GRAYSCALE, all of them together
