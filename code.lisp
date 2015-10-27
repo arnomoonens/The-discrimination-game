@@ -1,11 +1,3 @@
-;------CONFIG------
-(defparameter *nr-of-objects* 6)
-(defparameter *pruning-frequency* 20)
-(defparameter *pruning-used-treshold* 10)
-(defparameter *pruning-success-treshold* 0.2)
-(defparameter *saliency-treshold* 0)
-
-
 (defun parse-number (str)
   (with-input-from-string (in str)
                           (read in)))
@@ -124,10 +116,8 @@
 (defstruct agent
   (games-played 0 :type number)
   (repertoire-size (length *sensory-channels*) :type number)
-  (objects (get-random-objects *nr-of-objects*) :type cons)
+  (objects)
   (trees (loop for channel in *sensory-channels* collect (make-node :channel channel)) :type cons))
-
-(defparameter *agent* (make-agent))
 
 (defun saliency-filter (topic objects trees treshold)
   (loop for channel in *sensory-channels*
@@ -156,11 +146,11 @@
             (push (node-left node) trees)
             (push (node-right node) trees)))))
 
-(defun trees-pruning (trees)
+(defun trees-pruning (trees pruning-used-treshold pruning-success-treshold)
   (let ((removed-nodes 0))
     (defun walk-tree (tree)
       (if (or (null (node-left tree)) (null (node-right tree)));Check if node may be removed only if it is a leaf node (i.e. has no children)
-          (and (> (node-used tree) *pruning-used-treshold*) (< (/ (node-success tree) (node-used tree)) *pruning-success-treshold*)) ;Node may be removed if it is already used for a few times but hasn't been very successful
+          (and (> (node-used tree) pruning-used-treshold) (< (/ (node-success tree) (node-used tree)) pruning-success-treshold)) ;Node may be removed if it is already used for a few times but hasn't been very successful
           (let ((left (walk-tree (node-left tree)))
                 (right (walk-tree (node-right tree))))
             (if (and left right) ;If the left and right child may be removed: remove them execute walk-tree function on same node (which will go to the 'then' branch of the first 'if')
@@ -170,10 +160,15 @@
           (walk-tree tree))
     removed-nodes))
 
-(defun play-n-games (agent n)
+; (defparameter *pruning-frequency* 20)
+; (defparameter *pruning-used-treshold* 10)
+; (defparameter *pruning-success-treshold* 0.2)
+; (defparameter *saliency-treshold* 0)
+
+(defun play-n-games (agent n pruning-frequency pruning-used-treshold pruning-success-treshold saliency-treshold)
   (let* ((objects-copy (loop for obj in (agent-objects agent) collect (copy-object obj)))
          (objects-scaled (context-scaling objects-copy)))
-    ; (format t "Value for ~s channel of topic: ~d~%" (node-channel tree) (slot-value topic (node-channel tree)))
+    (print objects-scaled)
     (defun try-node (topic-scaled node objects path)
       (let* ((filtered-objects (filter-objects (list node) objects))
              (new-path (cons (cons node filtered-objects) path))); Each element of a path is a cons of the visited node and the objects left after filtering using that node
@@ -185,12 +180,12 @@
     (loop repeat n
           for (size result) = (let* ((topic (random-element (agent-objects agent)))
                                      (topic-scaled (nth (position topic (agent-objects agent)) objects-scaled))
-                                     (trees (saliency-filter topic (remove topic (agent-objects agent)) (agent-trees agent) *saliency-treshold*))
+                                     (trees (saliency-filter topic (remove topic (agent-objects agent)) (agent-trees agent) saliency-treshold))
                                      (tree-paths (loop for tree in trees collect (try-node topic-scaled tree objects-scaled '())))
                                      (combinations (tree-combinations tree-paths))) ;Combinations of trees (sensory channels), e.g. X and WIDTH, only GRAYSCALE, all of them together
                                 (setf (agent-games-played agent) (+ 1 (agent-games-played agent)))
-                                (when (= (mod (agent-games-played agent) *pruning-frequency*) 0)
-                                  (setf (agent-repertoire-size agent) (- (agent-repertoire-size agent) (trees-pruning (agent-trees agent)))))
+                                (when (= (mod (agent-games-played agent) pruning-frequency) 0)
+                                  (setf (agent-repertoire-size agent) (- (agent-repertoire-size agent) (trees-pruning (agent-trees agent) pruning-used-treshold pruning-success-treshold))))
                                 (increment-age (copy-list (agent-trees agent)))
                                 (loop for combination in combinations
                                       for tree-nodes-lists = (tree-nodes-combinations combination) ;make combinations of nodes from those trees, e.g.: {[X 0.0-0.5] [Y 0.5-1.0]}
@@ -209,24 +204,14 @@
           collect result into results
           finally (return (values sizes results))))) ;No results from all the inner loops: randomly expand a random tree
 
-;collect (progn (loop for node in result do (setf (node-success node) (+ 1 (node-success node)))) t) into results
+(defparameter *agent* (make-agent :objects (get-random-objects 6)))
 
-; (loop repeat 20
-;       for (sizepoint successpoint) =  (loop repeat 25
-;                     for (size result) = (multiple-value-list (PLAY-GAME *agent*))
-;                     collect result into results
-;                     finally (return (list size (/ (count-if-not #'null results) 25.0))))
-;       summing 25 into xaxis
-;       collect (list xaxis sizepoint) into sizes
-;       collect (list xaxis successpoint) into successes
-;       finally (progn (loop for xy in sizes do (format t "(~d, ~d)~%" (car xy) (cadr xy))) (loop for xy in successes do (format t "(~d, ~d)~%" (car xy) (cadr xy)))))
-
-
-(multiple-value-bind (sizes results) (play-n-games *agent* (* 20 25))
-                     (let* ((sizes-split (split-in-parts sizes 25))
-                            (sizes-reduced (mapcar (lambda (sizes-part) (car (last sizes-part))) sizes-split))
-                           (results-split (split-in-parts results 25))
-                           (results-reduced (mapcar (lambda (results-part) (/ (count-if-not #'null results-part) 25.0)) results-split)))
-                       (loop for size in sizes-reduced summing 25 into xaxis do (format t "(~d, ~d)~%" xaxis size))
-                       (loop for result in results-reduced summing 25 into xaxis do (format t "(~d, ~d)~%" xaxis result))))
+(let ((average-of-n-games 25))
+  (multiple-value-bind (sizes results) (play-n-games *agent* (* 40 average-of-n-games) 20 10 0.2 0)
+                       (let* ((sizes-split (split-in-parts sizes average-of-n-games))
+                              (sizes-reduced (mapcar (lambda (sizes-part) (car (last sizes-part))) sizes-split))
+                              (results-split (split-in-parts results average-of-n-games))
+                              (results-reduced (mapcar (lambda (results-part) (/ (count-if-not #'null results-part) (float average-of-n-games))) results-split)))
+                         (loop for size in sizes-reduced summing average-of-n-games into xaxis do (format t "(~d, ~d)~%" xaxis size))
+                         (loop for result in results-reduced summing average-of-n-games into xaxis do (format t "(~d, ~d)~%" xaxis result)))))
 
