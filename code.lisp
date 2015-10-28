@@ -79,8 +79,9 @@
   (let* ((channel (node-channel node))
          (regionstart (node-regionstart node))
          (regionend (node-regionend node))
-         (left (make-node :channel channel :regionstart regionstart :regionend (/ (+ regionstart regionend) 2)))
-         (right (make-node :channel channel :regionstart (/ (+ regionstart regionend) 2) :regionend regionend)))
+         (half (/ (+ regionstart regionend) 2))
+         (left (make-node :channel channel :regionstart regionstart :regionend half))
+         (right (make-node :channel channel :regionstart half :regionend regionend)))
     (setf (node-left node) left)
     (setf (node-right node) right)))
 
@@ -128,6 +129,19 @@
         when (> saliency treshold)
         collect  (nth (- ctr 1) trees)))
 
+(defun get-saliency (topic objects trees)
+  (loop for channel in *sensory-channels*
+        collect (loop for obj in objects
+                             collect (abs (- (slot-value topic channel) (slot-value obj channel))) into diffs
+                             finally (return (apply #'min diffs)))))
+
+(defun sort-by-saliency (topic objects trees)
+  (let ((saliency-values (loop for channel in *sensory-channels*
+        collect (loop for obj in objects
+                             collect (abs (- (slot-value topic channel) (slot-value obj channel))) into diffs
+                             finally (return (cons channel (apply #'min diffs)))))))
+    (sort saliency-values #'> :key #'cdr)))
+
 (defun context-scaling (objects)
   (loop for channel in (butlast *sensory-channels*) do ;Butlast: don't apply context-scaling to grayscale, values are important
         (let* ((values (loop for obj in objects collect (slot-value obj channel)))
@@ -154,28 +168,21 @@
           (let ((left (walk-tree (node-left tree)))
                 (right (walk-tree (node-right tree))))
             (if (and left right) ;If the left and right child may be removed: remove them execute walk-tree function on same node (which will go to the 'then' branch of the first 'if')
-                (progn (format t "Removing children of ~a" tree) (setf (node-left tree) nil) (setf (node-right tree) nil) (setf removed-nodes (+ 2 removed-nodes)) (walk-tree tree))
+                (progn (format t "Pruning children of ~a~%" tree) (setf (node-left tree) nil) (setf (node-right tree) nil) (setf removed-nodes (+ 2 removed-nodes)) (walk-tree tree))
                 nil))))
     (loop for tree in trees do ;Check the tree of every sensory channel
           (walk-tree tree))
     removed-nodes))
 
-; (defparameter *pruning-frequency* 20)
-; (defparameter *pruning-used-treshold* 10)
-; (defparameter *pruning-success-treshold* 0.2)
-; (defparameter *saliency-treshold* 0)
-
 (defun play-n-games (agent n pruning-frequency pruning-used-treshold pruning-success-treshold saliency-treshold)
   (let* ((objects-copy (loop for obj in (agent-objects agent) collect (copy-object obj)))
          (objects-scaled (context-scaling objects-copy)))
-    (print objects-scaled)
     (defun try-node (topic-scaled node objects path)
       (let* ((filtered-objects (filter-objects (list node) objects))
              (new-path (cons (cons node filtered-objects) path))); Each element of a path is a cons of the visited node and the objects left after filtering using that node
-        (setf (node-used node) (+ 1 (node-used node)))
         (cond
           ((or (null (node-left node)) (null (node-right node))) (reverse new-path))
-          ((<= (slot-value topic-scaled (node-channel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node topic-scaled (node-left node) filtered-objects new-path))
+          ((< (slot-value topic-scaled (node-channel node)) (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node topic-scaled (node-left node) filtered-objects new-path))
           (t (try-node topic-scaled (node-right node) filtered-objects new-path)))))
     (loop repeat n
           for (size result) = (let* ((topic (random-element (agent-objects agent)))
@@ -191,10 +198,11 @@
                                       for tree-nodes-lists = (tree-nodes-combinations combination) ;make combinations of nodes from those trees, e.g.: {[X 0.0-0.5] [Y 0.5-1.0]}
                                       for result = (loop for nodes-combination in tree-nodes-lists
                                                          for filtered = (reduce #'intersection (mapcar #'cdr nodes-combination));Filter using combinations of nodes: intersection of objects left after filtering using the nodes
+                                                         for nodes = (mapcar #'car nodes-combination)
+                                                         do (loop for node in nodes do (setf (node-used node) (+ 1 (node-used node))));Increase used counter of nodes in combination
                                                          when (and (= (length filtered) 1) (eq (car filtered) topic-scaled)) do ;Only the topic is left after filtering
-                                                         (let ((nodes (mapcar #'car nodes-combination)))
-                                                           (loop for node in nodes do (setf (node-success node) (+ 1 (node-success node)))) ;Increase success of all nodes used for discrimination
-                                                           (return nodes));Discriminative combination found: stop looping
+                                                          (loop for node in nodes do (setf (node-success node) (+ 1 (node-success node)))) ;Increase success of all nodes used for discrimination
+                                                           (return nodes);Discriminative combination found: stop looping
                                                          finally (return nil)) ;No discriminative combination of nodes found
                                       when result do
                                       ;(format t "Found it, combination: ~a. Topic was: ~a~%" result topic-scaled)
@@ -204,14 +212,14 @@
           collect result into results
           finally (return (values sizes results))))) ;No results from all the inner loops: randomly expand a random tree
 
-(defparameter *agent* (make-agent :objects (get-random-objects 6)))
+(defparameter *agent* (make-agent :objects (get-random-objects 10)))
 
 (let ((average-of-n-games 25))
-  (multiple-value-bind (sizes results) (play-n-games *agent* (* 40 average-of-n-games) 20 10 0.2 0)
+  (multiple-value-bind (sizes results) (play-n-games *agent* (* 20 average-of-n-games) 10 10 0.2 0)
                        (let* ((sizes-split (split-in-parts sizes average-of-n-games))
                               (sizes-reduced (mapcar (lambda (sizes-part) (car (last sizes-part))) sizes-split))
                               (results-split (split-in-parts results average-of-n-games))
                               (results-reduced (mapcar (lambda (results-part) (/ (count-if-not #'null results-part) (float average-of-n-games))) results-split)))
                          (loop for size in sizes-reduced summing average-of-n-games into xaxis do (format t "(~d, ~d)~%" xaxis size))
-                         (loop for result in results-reduced summing average-of-n-games into xaxis do (format t "(~d, ~d)~%" xaxis result)))))
-
+                         (loop for result in results-reduced summing average-of-n-games into xaxis do (format t "(~d, ~d)~%" xaxis result))
+                         )))
