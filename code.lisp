@@ -79,6 +79,11 @@
   (left)
   (right))
 
+(defun mean-success (nodes)
+  (if (null nodes)
+      0
+      (/ (reduce #'+ nodes :key #'node-success) (length nodes))))
+
 (defun split-node (node)
   (let* ((channel (node-channel node))
          (regionstart (node-regionstart node))
@@ -201,34 +206,52 @@
     (loop repeat n
           for result = (let* ((topic (random-element (agent-objects agent)))
                               (topic-scaled (nth (position topic (agent-objects agent)) objects-scaled))
-                              (trees (saliency-filter topic (remove topic (agent-objects agent)) (agent-trees agent) saliency-treshold))
-                              (tree-paths (loop for tree in trees collect (try-node topic-scaled tree objects-scaled '())))
+                              (trees (saliency-filter topic
+                                                      (remove topic (agent-objects agent))
+                                                      (agent-trees agent)
+                                                      saliency-treshold))
+                              (tree-paths (loop for tree in trees collect (try-node topic-scaled
+                                                                                    tree
+                                                                                    objects-scaled
+                                                                                    '())))
                               (combinations (tree-combinations tree-paths))) ;Combinations of trees (sensory channels), e.g. X and WIDTH, only GRAYSCALE, all of them together
                          (setf (agent-games-played agent) (+ 1 (agent-games-played agent)))
                          (when (= (mod (agent-games-played agent) pruning-frequency) 0)
                            (setf (agent-repertoire-size agent) (- (agent-repertoire-size agent)
-                                                                  (trees-pruning (agent-trees agent) pruning-used-treshold pruning-success-treshold))))
+                                                                  (trees-pruning (agent-trees agent)
+                                                                                 pruning-used-treshold
+                                                                                 pruning-success-treshold))))
                          (increment-age (copy-list (agent-trees agent)))
                          (loop for combination in combinations
                                for tree-nodes-lists = (tree-nodes-combinations combination) ;make combinations of nodes from those trees, e.g.: {[X 0.0-0.5] [Y 0.5-1.0]}
-                               for result = (loop for nodes-combination in tree-nodes-lists
-                                                  for filtered = (reduce #'intersection (mapcar #'cdr nodes-combination));Filter using combinations of nodes: intersection of objects left after filtering using the nodes
-                                                  for nodes = (mapcar #'car nodes-combination)
-                                                  do (loop for node in nodes do (setf (node-used node) (+ 1 (node-used node))));Increase used counter of nodes in combination
-                                                  when (and (= (length filtered) 1) (eq (car filtered) topic-scaled)) do ;Only the topic is left after filtering
-                                                  (loop for node in nodes do (setf (node-success node) (+ 1 (node-success node)))) ;Increase success of all nodes used for discrimination
-                                                  (return nodes);Discriminative combination found: stop looping
-                                                  finally (return nil)) ;No discriminative combination of nodes found
-                               when result do
-                               ;(format t "Found it, combination: ~a. Topic was: ~a~%" result topic-scaled)
-                               (return (list (agent-repertoire-size agent) result)) ;Result from inner-loop: stop outer loop as well
-                               finally (progn (random-expand (random-element (agent-trees agent)))
-                                              (return (list (setf (agent-repertoire-size agent) (+ 2 (agent-repertoire-size agent)))
-                                                            nil)))))
+                               for result =  (loop for nodes-combination in tree-nodes-lists
+                                             for filtered = (reduce #'intersection (mapcar #'cdr nodes-combination));Filter using combinations of nodes: intersection of objects left after filtering using the nodes
+                                             for nodes = (mapcar #'car nodes-combination)
+                                             do (loop for node in nodes do (setf (node-used node) (+ 1 (node-used node))));Increase used counter of nodes in combination
+                                             when (and (= (length filtered) 1) (eq (car filtered) topic-scaled)) do ;Only the topic is left after filtering
+                                                (loop for node in nodes do (setf (node-success node) (+ 1 (node-success node)))) ;Increase success of all nodes used for discrimination
+                                                (return nodes);Discriminative combination found: stop looping
+                                             finally (return nil)) ;No discriminative combination of nodes found
+                               when result
+                                  collect result into results
+                               finally (if (not (null results))
+                                           (let ((most-successful (reduce (lambda (x y) (if (>= (mean-success x) (mean-success y));Keep the combination of nodes that was on average the most successful in the past
+                                                                                            x
+                                                                                            y))
+                                                                          results)))
+                                             (return (list (agent-repertoire-size agent) most-successful)))
+                                           (progn (random-expand (random-element (agent-trees agent)))
+                                                  (return (list (setf (agent-repertoire-size agent) (+ 2 (agent-repertoire-size agent)))
+                                                                nil))))))
           collect result into results
           finally (return results)))) ;No results from all the inner loops: randomly expand a random tree
 
 (defparameter *agent* (make-agent :objects (get-random-objects 6)))
+
+(defun reset-agent (agent)
+  (setf (agent-repertoire-size agent) (length *sensory-channels*))
+  (setf (agent-games-played agent) 0)
+  (setf (agent-trees agent) (loop for channel in *sensory-channels* collect (make-node :channel channel))))
 
 (let* ((average-of-n-games 25)
        (nr-of-groups 40)
@@ -253,14 +276,9 @@
                         :direction :output
                         :if-exists :overwrite)))
   (write-line (format nil "~{~a~^, ~}" '(games size success)) my-stream)
- (write-line (format nil "~{~a~^, ~}" '(0 5 0.0)) my-stream)
+  (write-line (format nil "~{~a~^, ~}" '(0 5 0.0)) my-stream)
   (loop for result in results-reduced
         summing average-of-n-games into xaxis
         do
         (write-line (format nil "~{~a~^, ~}" (append (list xaxis) result)) my-stream))
   (close my-stream))
-
-(defun reset-agent (agent)
-  (setf (agent-repertoire-size agent) (length *sensory-channels*))
-  (setf (agent-games-played agent) 0)
-  (setf (agent-trees agent) (loop for channel in *sensory-channels* collect (make-node :channel channel))))
