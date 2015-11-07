@@ -1,7 +1,13 @@
+;Needs to be configured on beforehand
+(defparameter *PATH-TO-OBJECT-FEATURES-TXT* "~/object-features.txt")
+(defparameter *PATH-TO-CSV-DIRECTORY* "~/csv/") ;Directory where to save results as csv file when multiple games are played
+
+
 (defun parse-number (str)
   (with-input-from-string (in str)
                           (read in)))
 
+;Split a list l in n parts (used for calculating the discrimination percentage and repertoire size)
 (defun split-in-parts (l n)
   (loop until (>= start (length l))
         for start = 0 then (+ start n)
@@ -17,14 +23,7 @@
       (max (+ 1 (max-depth (node-left tree)))
            (+ 1 (max-depth (node-right tree))))))
 
-;Can be removed? Same as (not (mismatch first second))
-(defun same-elements (first second)
-  (and (= (length first) (length second)) (loop for el in first do
-                                                (when (not (member el second))
-                                                  (return nil))
-                                                finally (return t))))
-
-;Source: my solutions of the Lisp exercises
+;Returns a power set of trees
 (defun tree-combinations (trees)
   (labels ((iter (result current)
                  (if (null current)
@@ -33,7 +32,7 @@
                                    result) (cdr current)))))
           (iter '(nil) trees)))
 
-;Todo: write iteratively?
+;Returns combination of nodes by taking a node from each item in the list of lists
 (defun tree-nodes-combinations (lists)
   (if (car lists)
       (mapcan (lambda (inner-val)
@@ -59,7 +58,7 @@
                                                        (subseq object-list 3 6))))))
 
 (defun get-random-objects (n)
-  (let ((in (open "~/MA1-AI/Artificial Intelligence Programming Paradigms/Assignment1/object-features.txt" :if-does-not-exist nil)))
+  (let ((in (open *PATH-TO-OBJECT-FEATURES-TXT* :if-does-not-exist nil)))
     (when in
       (read-line in nil)
       (defparameter *objects* (loop for line = (read-line in nil)
@@ -84,7 +83,7 @@
       0
       (/ (reduce #'+ nodes :key #'node-success) (length nodes))))
 
-(defun split-node (node)
+(defun split-node (node) ;Add 2 children with each the half of the region of node
   (let* ((channel (node-channel node))
          (regionstart (node-regionstart node))
          (regionend (node-regionend node))
@@ -94,7 +93,7 @@
     (setf (node-left node) left)
     (setf (node-right node) right)))
 
-(defun filter-objects (filter-nodes objects)
+(defun filter-objects (filter-nodes objects) ;Returns objects for which the values of sensory channels lie in the regions of filter-nodes
   (loop for node in filter-nodes
         for start = (node-regionstart node)
         for end = (node-regionend node)
@@ -112,13 +111,6 @@
           (random-expand (node-right tree)))
       (split-node tree))) ;we are at a leaf: split it
 
-(defun same-values (objects channel)
-  (let ((first-value (slot-value (car objects) channel)))
-    (loop for obj in objects do
-          (when (not (= (slot-value obj channel) first-value))
-            (return nil))
-          finally (return t))))
-
 (defmethod print-object ((object node) stream)
   (print-unreadable-object (object stream :type t)
                            (with-slots (channel regionstart regionend left right) object
@@ -130,6 +122,12 @@
   (objects)
   (trees (loop for channel in *sensory-channels* collect (make-node :channel channel)) :type cons))
 
+;Resets all but the objects of an agent
+(defun reset-agent (agent)
+  (setf (agent-repertoire-size agent) (length *sensory-channels*))
+  (setf (agent-games-played agent) 0)
+  (setf (agent-trees agent) (loop for channel in *sensory-channels* collect (make-node :channel channel))))
+
 (defun saliency-filter (topic objects trees treshold)
   (loop for channel in *sensory-channels*
         summing 1 into ctr
@@ -138,19 +136,6 @@
                              finally (return (apply #'min diffs)))
         when (> saliency treshold)
         collect  (nth (- ctr 1) trees)))
-
-(defun get-saliency (topic objects trees)
-  (loop for channel in *sensory-channels*
-        collect (loop for obj in objects
-                      collect (abs (- (slot-value topic channel) (slot-value obj channel))) into diffs
-                      finally (return (apply #'min diffs)))))
-
-(defun sort-by-saliency (topic objects trees)
-  (let ((saliency-values (loop for channel in *sensory-channels*
-                               collect (loop for obj in objects
-                                             collect (abs (- (slot-value topic channel) (slot-value obj channel))) into diffs
-                                             finally (return (cons channel (apply #'min diffs)))))))
-    (sort saliency-values #'> :key #'cdr)))
 
 (defun context-scaling (objects)
   (loop for channel in (butlast *sensory-channels*) do ;Butlast: don't apply context-scaling to grayscale, values are important
@@ -170,15 +155,15 @@
             (push (node-left node) trees)
             (push (node-right node) trees)))))
 
-(defun trees-pruning (trees pruning-used-treshold pruning-success-treshold)
+(defun trees-pruning (trees pruning-used-treshold pruning-success-treshold pruning-age-treshold)
   (let ((removed-nodes 0))
     (defun walk-tree (tree)
       (if (or (null (node-left tree)) (null (node-right tree)));Check if node may be removed only if it is a leaf node (i.e. has no children)
           (if (> (node-used tree) pruning-used-treshold)
-              (< (/ (node-success tree) (node-used tree)) pruning-success-treshold)
+              (< (/ (node-success tree) (node-used tree)) pruning-success-treshold) ;Node may be removed if it is already used for a few times but hasn't been very successful
               (and (or (= (node-used tree) 0)
                        (< (/ (node-success tree) (node-used tree)) pruning-success-treshold))
-                   (> (node-age tree) 50))) ;Node may be removed if it is already used for a few times but hasn't been very successful
+                   (> (node-age tree) pruning-age-treshold)))
           (let ((left (walk-tree (node-left tree)))
                 (right (walk-tree (node-right tree))))
             (if (and left right) ;If the left and right child may be removed: remove them execute walk-tree function on same node (which will go to the 'then' branch of the first 'if')
@@ -192,14 +177,14 @@
           (walk-tree tree))
     removed-nodes))
 
-(defun play-n-games (agent n pruning-frequency pruning-used-treshold pruning-success-treshold saliency-treshold)
+(defun play-n-games (agent n pruning-frequency pruning-used-treshold pruning-success-treshold pruning-age-treshold saliency-treshold)
   (let* ((objects-copy (loop for obj in (agent-objects agent) collect (copy-object obj)))
          (objects-scaled (context-scaling objects-copy)))
     (defun try-node (topic-scaled node objects path)
       (let* ((filtered-objects (filter-objects (list node) objects))
              (new-path (cons (cons node filtered-objects) path))); Each element of a path is a cons of the visited node and the objects left after filtering using that node
         (cond
-          ((or (null (node-left node)) (null (node-right node))) (reverse new-path))
+          ((or (null (node-left node)) (null (node-right node))) (reverse new-path));We are at a leaf: return path starting from root
           ((< (slot-value topic-scaled (node-channel node))
               (/ (+ (node-regionstart node) (node-regionend node)) 2)) (try-node topic-scaled (node-left node) filtered-objects new-path))
           (t (try-node topic-scaled (node-right node) filtered-objects new-path)))))
@@ -216,11 +201,6 @@
                                                                                     '())))
                               (combinations (tree-combinations tree-paths))) ;Combinations of trees (sensory channels), e.g. X and WIDTH, only GRAYSCALE, all of them together
                          (setf (agent-games-played agent) (+ 1 (agent-games-played agent)))
-                         (when (= (mod (agent-games-played agent) pruning-frequency) 0)
-                           (setf (agent-repertoire-size agent) (- (agent-repertoire-size agent)
-                                                                  (trees-pruning (agent-trees agent)
-                                                                                 pruning-used-treshold
-                                                                                 pruning-success-treshold))))
                          (increment-age (copy-list (agent-trees agent)))
                          (loop for combination in combinations
                                for tree-nodes-lists = (tree-nodes-combinations combination) ;make combinations of nodes from those trees, e.g.: {[X 0.0-0.5] [Y 0.5-1.0]}
@@ -229,16 +209,24 @@
                                              for nodes = (mapcar #'car nodes-combination)
                                              do (loop for node in nodes do (setf (node-used node) (+ 1 (node-used node))));Increase used counter of nodes in combination
                                              when (and (= (length filtered) 1) (eq (car filtered) topic-scaled)) do ;Only the topic is left after filtering
-                                                (loop for node in nodes do (setf (node-success node) (+ 1 (node-success node)))) ;Increase success of all nodes used for discrimination
                                                 (return nodes);Discriminative combination found: stop looping
                                              finally (return nil)) ;No discriminative combination of nodes found
                                when result
                                   collect result into results
                                finally (if (not (null results))
-                                           (let ((most-successful (reduce (lambda (x y) (if (>= (mean-success x) (mean-success y));Keep the combination of nodes that was on average the most successful in the past
-                                                                                            x
-                                                                                            y))
+                                           (let ((most-successful (reduce (lambda (x y) (let ((x-success (mean-success x))
+                                                                                              (y-success (mean-success y)))
+                                                                                          (cond ((> y-success x-success) y)
+                                                                                                ((= y-success x-success) x)
+                                                                                                (t x))));Keep the combination of nodes that was on average the most successful in the past
                                                                           results)))
+                                             (loop for node in most-successful do (setf (node-success node) (+ 1 (node-success node)))) ;Increase success of all nodes used for discrimination
+                                             (when (= (mod (agent-games-played agent) pruning-frequency) 0)
+                           (setf (agent-repertoire-size agent) (- (agent-repertoire-size agent) ;Reduce the repertoire size by the number of nodes that was pruned
+                                                                  (trees-pruning (agent-trees agent)
+                                                                                 pruning-used-treshold
+                                                                                 pruning-success-treshold
+                                                                                 pruning-age-treshold))))
                                              (return (list (agent-repertoire-size agent) most-successful)))
                                            (progn (random-expand (random-element (agent-trees agent)))
                                                   (return (list (setf (agent-repertoire-size agent) (+ 2 (agent-repertoire-size agent)))
@@ -248,28 +236,36 @@
 
 (defparameter *agent* (make-agent :objects (get-random-objects 6)))
 
-(defun reset-agent (agent)
-  (setf (agent-repertoire-size agent) (length *sensory-channels*))
-  (setf (agent-games-played agent) 0)
-  (setf (agent-trees agent) (loop for channel in *sensory-channels* collect (make-node :channel channel))))
+;Play 1 game and get combination of categorizers that discriminate
+;(play-n-games *agent* 1 20 10 0.2 0)
 
+;Play multiple games and write repertoire size and average success to csv file (in directory defined by *PATH-TO-CSV-DIRECTORY*)
 (let* ((average-of-n-games 25)
        (nr-of-groups 40)
-       (pruning-frequency 25)
-       (pruning-used-treshold 25)
-       (pruning-success-treshold 0.2)
+       (pruning-frequency 10)
+       (pruning-used-treshold 10)
+       (pruning-success-treshold 0.05)
+       (pruning-age-treshold 20)
        (saliency-treshold 0)
-       (results (play-n-games *agent* (* nr-of-groups average-of-n-games) pruning-frequency pruning-used-treshold pruning-success-treshold saliency-treshold))
+       (results (play-n-games *agent*
+                              (* nr-of-groups average-of-n-games)
+                              pruning-frequency
+                              pruning-used-treshold
+                              pruning-success-treshold
+                              pruning-age-treshold
+                              saliency-treshold))
        (results-split (split-in-parts results average-of-n-games))
        (results-reduced (mapcar (lambda (results-part)
-                                  (append (list (caar (last results-part)))
-                                          (list (/ (count-if-not #'null results-part :key #'cadr) (float average-of-n-games))))) results-split))
-       (my-stream (open (concatenate 'string "~/Dropbox/aipp1/csv/res"
+                                  (append (list (caar (last results-part))) ;Keep last repertoire size of the 25 games
+                                          (list (/ (count-if-not #'null results-part :key #'cadr) (float average-of-n-games))))) results-split)) ;Calculate percentage of games that succeeded
+       (my-stream (open (concatenate 'string *PATH-TO-CSV-DIRECTORY*
+                                     "result-"
                                      (write-to-string average-of-n-games) "-"
                                      (write-to-string nr-of-groups) "-"
                                      (write-to-string pruning-frequency) "-"
                                      (write-to-string pruning-used-treshold) "-"
                                      (write-to-string pruning-success-treshold) "-"
+                                     (write-to-string pruning-age-treshold) "-"
                                      (write-to-string saliency-treshold)
                                      ".csv")
                         :if-does-not-exist :create
